@@ -1,4 +1,4 @@
-
+//Project is still in progress. It is for my senior project
 //Bottom Tag Navigation and Stack Navigation
 //Navigation.js
 
