@@ -1,0 +1,329 @@
+//TrainLighting.html
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Train Lighting</title>
+
+<script id="vertex-shader" type="x-shader/x-vertex">
+#version 300 es
+in vec4 vPosition;
+in vec3 vNormal;
+out vec3 N, L, E;
+uniform mat4 viewModel;
+uniform mat4 projection;
+uniform vec4 lightPosition;
+out vec4 fColor;
+void main()
+{
+    vec3 pos = (viewModel * vPosition).xyz;
+    vec3 light = lightPosition.xyz;
+    L = normalize(light - pos);
+    E = -pos;
+    N = normalize((viewModel* vec4(vNormal, 0.0)).xyz);
+    gl_Position = projection * viewModel * vPosition;
+}
+</script>
+
+<script id="fragment-shader" type="x-shader/x-fragment">
+#version 300 es
+precision mediump float;
+        
+out vec4 fragColor;
+uniform vec4 ambientProduct;
+uniform vec4 diffuseProduct;
+uniform vec4 specularProduct;
+uniform float shininess;
+in vec3 N, L, E;
+
+
+void main()
+{
+    vec4 fColor;
+    vec3 H = normalize(L + E);
+    vec4 ambient = ambientProduct;
+    float Kd = abs(dot(L, N));
+    vec4 diffuse = Kd * diffuseProduct;
+    float Ks = pow(abs(dot(N, H)), shininess);
+    vec4 specular = Ks * specularProduct;
+    fColor = ambient + diffuse + specular;
+    fColor.a = 1.0;
+    fragColor = fColor;
+}
+</script>
+
+    <!--Common libraries -->
+    <script type="text/javascript" src="../Common/initShaders.js"></script>
+    <script type="text/javascript" src="../Common/MVnew.js"></script>
+    <!--Include train data and animate program -->
+    <script type="text/javascript" src="trainData.js"></script>
+    <script type="text/javascript" src="trainLighting.js"></script>
+</head>
+<body>
+    Camera: <button id="pause">Rotate</button>
+    <label for="cameraheightslide"> Height </label><input id="cameraheightslide" type="range" min="-20" max="20" step="0.1" value="0"/>
+    <span id="cameraheight">0.0</span><br>
+    <canvas id="gl-canvas" width="800" height="600">
+        Oops ... your browser doesn't support the HTML5 canvas element
+    </canvas>
+</body>
+</html>
+
+//TrainLighting.js
+
+var gl;
+var canvas;
+
+// Global points, normals, and colors from train data
+var points = [];  // Vertices for the train
+var colors = [];  // Not needed in your program since you are passing in
+                  // material properties.
+var normals = []; // Not used in this program, but you will need it in your 
+                  // program to calculate the light shading.
+
+// Global center and radius of data
+var dataCenter;
+var dataRadius;
+
+// Global uniform location variables
+var viewModelLoc;
+var projectionLoc;
+
+// Global view information
+var viewUp = vec3(0.0, 1.0, 0.0);
+var viewHeight = 0.0;             // The height of the camera
+var viewRadius = 9.0;             // The radius of the camera circle
+var viewTheta = 0.0;
+var viewNear;
+var viewFar;
+var viewAspectRatio;
+var viewDist;
+var viewSpeed = 0.005;            // How fast to update the viewTheta
+var ViewFov;
+var pause = true;
+
+//Light Properties
+var lightAmbient = vec4(0.2, 0.2, 0.2, 1.0);
+var lightDiffuse = vec4(1.0, 1.0, 1.0, 1.0);
+var lightSpecular = vec4(1.0, 1.0, 1.0, 1.0);
+
+//Material Properties
+var materialAmbient = vec4(0.2, 0.2, 0.2, 1.0);
+var materialDiffuse = vec4(1.0, 0.8, 0.0, 1.0);
+var materialSpecular = vec4(1.0, 0.8, 0.0, 1.0);
+var materialShininess = 200.0;
+
+window.onload = function init()
+{
+    //Get the canvas
+    canvas = document.getElementById("gl-canvas");
+
+    //Set up WebGL
+    gl = canvas.getContext("webgl2");
+    if (!gl) { alert("WebGL isn't available"); }
+
+    traindata = new getTraindata();
+    
+    // Extract points, normals and colors out of the train data.
+    points = traindata.points;
+    normals = traindata.normals;
+    colors = traindata.barycentrics; // Treating barycentrics as colors
+
+    // Calculate min and max box enclosure
+    // Initialize min and max point to first point
+    var minpt = vec3(points[0]);
+    var maxpt = vec3(points[0]);
+    // Go through the points finding the smallest/largest x,y and z
+    // NOTE: Already set point[0], so we start at 1
+    for (var i = 1; i < points.length; i++)
+    {
+	if (points[i][0] < minpt[0])
+	    minpt[0] = points[i][0];
+	if (points[i][0] > maxpt[0])
+	    maxpt[0] = points[i][0];
+	if (points[i][1] < minpt[1])
+	    minpt[1] = points[i][1];
+	if (points[i][1] > maxpt[1])
+	    maxpt[1] = points[i][1];
+	if (points[i][2] < minpt[2])
+	    minpt[2] = points[i][2];
+	if (points[i][2] > maxpt[2])
+	    maxpt[2] = points[i][2];
+    }
+
+    // Calculate center by taking average of minimum and maximum point
+    // NOTE: dataCenter is used to point the camera at using lookAt
+    dataCenter = add(minpt,maxpt);
+    dataCenter[0] /= 2.0;
+    dataCenter[1] /= 2.0;
+    dataCenter[2] /= 2.0;
+
+    // Calculate radius by taking the distance from minimum to center
+    // NOTE: dataRadius is used to calculate the Field of View, making sure
+    // the entire train is seen in the view.
+    dataRadius = length (subtract(dataCenter, minpt));
+
+    var lightPosition = vec4(dataCenter);
+    lightPosition[0] = viewRadius * Math.sin(viewTheta);
+    lightPosition[1] = viewHeight;
+    lightPosition[2] = viewRadius * Math.cos(viewTheta);
+    lightPosition[3] = 1.0;
+
+
+   
+    // Setup the view port to be the entire size of the canvas
+    gl.viewport(0, 0, canvas.width, canvas.height);
+	    
+    // Set the background color
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);
+
+    // Enable hidden-surface removal
+    gl.enable(gl.DEPTH_TEST);
+    
+    // Initialize shaders
+    var program = initShaders(gl, "vertex-shader", "fragment-shader");
+    gl.useProgram(program);
+
+    // Create a color buffer and pass the colors 
+    var cBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, cBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, flatten(colors), gl.STATIC_DRAW);
+
+    // Associate the colors with the vColor variable
+    var vColor = gl.getAttribLocation(program, "vColor");
+    gl.vertexAttribPointer(vColor, 3, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(vColor);
+
+    // Create a vertex buffer and pass the vertices
+    var vBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, flatten(points), gl.STATIC_DRAW);
+
+    // Associate the vertices with the vPosition variable
+    var vPosition = gl.getAttribLocation(program, "vPosition");
+    gl.vertexAttribPointer(vPosition, 3, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(vPosition);
+
+    var nBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, nBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, flatten(normals), gl.STATIC_DRAW);
+
+    // Associate the vertices with the vPosition variable
+    var vNormal = gl.getAttribLocation(program, "vNormal");
+    gl.vertexAttribPointer(vNormal, 3, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(vNormal);
+
+
+    // Get the uniform viewModel and projection location in the shaders
+    viewModelLoc = gl.getUniformLocation (program, "viewModel");
+    projectionLoc = gl.getUniformLocation (program, "projection");
+
+    var ambientProduct = mult(lightAmbient, materialAmbient);
+    var diffuseProduct = mult(lightDiffuse, materialDiffuse);
+    var specularProduct = mult(lightSpecular, materialSpecular);
+
+    gl.uniform4fv(gl.getUniformLocation(program, "ambientProduct"), flatten(ambientProduct));
+    gl.uniform4fv(gl.getUniformLocation(program, "diffuseProduct"), flatten(diffuseProduct));
+    gl.uniform4fv(gl.getUniformLocation(program, "specularProduct"), flatten(specularProduct));
+    gl.uniform4fv(gl.getUniformLocation(program, "lightPosition"), flatten(lightPosition));
+    gl.uniform1f(gl.getUniformLocation(program, "shininess"), materialShininess);
+
+    
+    // Handle pause button
+    var pauseButton = document.getElementById("pause");
+    pauseButton.addEventListener("click", function() {
+	if (pause) {
+	    // Unpause
+	    pause = false;
+	    pauseButton.innerHTML = "Pause"; // Change browser text
+	    requestAnimationFrame(render); // Start updating frames
+	}
+	else {
+	    // Pause
+	    pause = true;
+	    pauseButton.innerHTML = "Rotate"; // Change browser text
+	}
+    });
+
+    // Handle height slide
+    var cameraHeightSlide = document.getElementById("cameraheightslide");
+    
+    // Use input event so the event is triggered as you move the slider.
+    // The change event in FireFox and Chrome only triggers when you stop.
+    cameraHeightSlide.addEventListener("input", changeHeight);
+    
+    // NOTE: IE4 does not implement input, so we must use change.  IE4, unlike
+    // Firefox and Chrome, does trigger the event as you are using the slider.
+    cameraHeightSlide.addEventListener("change", changeHeight);
+	
+    // Render the data for the first time
+    render();
+}
+
+// Function for height slide
+function changeHeight(e) {
+	
+    // Set new view height
+    viewHeight = e.currentTarget.valueAsNumber;
+
+    // Update camera height text   
+    var cameraHeightSpan = document.getElementById("cameraheight");
+    // Note: toFixed is a built-in function which converts a number to a 
+    //       string with the specified number of fractional digits.
+    cameraHeightSpan.innerHTML = viewHeight.toFixed(2);
+
+    // Make sure frame is updated
+    if (pause)
+       requestAnimationFrame(render);
+}
+
+function render()
+{
+    
+    // Calculate new camera angle on circle 
+    if (!pause)
+	// Update rotation angle if not paused
+        viewTheta = viewTheta + viewSpeed;
+
+    // Update camera location
+    // NOTE: The camera circle is around the origin.  We need to move around 
+    //       the circle so we add the camera circle location to the center.
+    var camera = vec3(dataCenter);
+    camera[0] += viewRadius * Math.sin(viewTheta);
+    camera[1] += viewHeight;
+    camera[2] += viewRadius * Math.cos(viewTheta);
+
+    // Calculate view information
+    // NOTE: The ViewDist is the hypotenuse of a right angle triangle from 
+    //       the center of the train to the center of the view circle to the 
+    //       edge of the circle.
+    viewDist = Math.sqrt(viewHeight*viewHeight + viewRadius*viewRadius);
+    // NOTE: FOV is 2 * theta in degrees (the angle to the edge of the sphere
+    //       Sin theta is equal to opposite / hypotenuse or radius / distance
+    //       See "Defining Vertical Field of view.pdf" from viewing assignment
+    viewFov = Math.asin (dataRadius / viewDist) * 2.0 * (180.0 / Math.PI);
+    // NOTE: The near clipping plane has to be positive
+    viewNear = Math.max(viewDist - dataRadius, 0.01);
+    viewFar = viewDist + dataRadius;
+    viewAspectRatio = canvas.width / canvas.height;
+ 
+    // Calculate view model matrix using lookat utility function
+    var viewModel = lookAt (camera, dataCenter, viewUp);
+    gl.uniformMatrix4fv(viewModelLoc, false, flatten(viewModel));
+
+    // Calculate projection using perspective utility function
+    var projection = perspective (viewFov, viewAspectRatio, viewNear, viewFar); 
+    gl.uniformMatrix4fv(projectionLoc, false, flatten(projection));
+ 
+    // Clear the image and depth information
+    gl.clear(gl.COLOR_BUFFER_BIT  | gl.DEPTH_BUFFER_BIT);
+    
+    // Draw the train
+    gl.drawArrays(gl.TRIANGLES, 0, points.length);
+    
+    if (!pause)
+	// Update as fast as possible
+        requestAnimationFrame(render);
+}
+
+//Data is pulled from trainData.js which is a couple thousand lines of arrays containing points on the train
